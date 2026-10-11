@@ -1,6 +1,6 @@
 [project]
 name = "argonaut-legacy"
-version = "0.1.1"
+version = "0.1.2"
 description = "Argonaut Legacy — a desktop fantasy console with an in-console TPython IDE"
 readme = "README.md"
 license = { text = "MIT" }

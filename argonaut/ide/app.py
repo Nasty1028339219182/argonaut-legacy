@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -66,6 +67,42 @@ def _draw():
 """
 
 
+def _sharp_display() -> None:
+    """Draw 1:1 device pixels. Otherwise Windows stretches the window and blurs it."""
+    os.environ["SDL_WINDOWS_DPI_AWARENESS"] = "permonitorv2"
+    os.environ["SDL_RENDER_SCALE_QUALITY"] = "0"
+    os.environ["SDL_VIDEO_CENTERED"] = "1"
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+def _ui_scale() -> int:
+    try:
+        sizes = pygame.display.get_desktop_sizes()
+    except pygame.error:
+        return 1
+    if not sizes:
+        return 1
+    dw, dh = sizes[0]
+    if dw < 400 or dh < 300:
+        return 1
+    dw = int(dw * 0.96)
+    dh = int(dh * 0.92)
+    scale = 1
+    while scale < 3 and W * (scale + 1) <= dw and H * (scale + 1) <= dh:
+        scale += 1
+    return scale
+
+
 def _safe(name: str) -> str:
     cleaned = "".join(ch for ch in name.strip() if ch.isalnum() or ch in "-_")
     return cleaned or "untitled"
@@ -106,9 +143,12 @@ class AudioOut:
 
 class App:
     def __init__(self) -> None:
+        _sharp_display()
         pygame.init()
         pygame.display.set_caption("Argonaut Legacy")
-        self.screen = pygame.display.set_mode((W, H))
+        self.scale = _ui_scale()
+        self.window = pygame.display.set_mode((W * self.scale, H * self.scale))
+        self.screen = pygame.Surface((W, H)).convert()
         self.clock = pygame.time.Clock()
         face = font_file()
         if face.is_file():
@@ -299,6 +339,7 @@ class App:
             self.status = "команды: run, new, save имя, load имя"
 
     def on_event(self, event) -> None:
+        event = self._logical_event(event)
         if event.type == pygame.QUIT:
             self.alive = False
             return
@@ -401,7 +442,7 @@ class App:
         rect = self._body()
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and rect.collidepoint(event.pos):
             row, col = self.code.pos_at(event.pos[0], event.pos[1], rect, self.font)
-            self.code.click(col, row, bool(event.mod & pygame.KMOD_SHIFT))
+            self.code.click(col, row, bool(pygame.key.get_mods() & pygame.KMOD_SHIFT))
             self.dragging = True
         elif event.type == pygame.MOUSEBUTTONUP:
             self.dragging = False
@@ -1094,15 +1135,53 @@ class App:
     def _label(self, font, text, color, x, y) -> None:
         self.screen.blit(font.render(text, True, color), (x, y))
 
+    def _logical_event(self, event):
+        if self.scale == 1 or event.type not in (
+            pygame.MOUSEBUTTONDOWN,
+            pygame.MOUSEBUTTONUP,
+            pygame.MOUSEMOTION,
+        ):
+            return event
+        x, y = event.pos
+        data = dict(event.dict)
+        data["pos"] = (x // self.scale, y // self.scale)
+        return pygame.event.Event(event.type, data)
+
+    def _present(self) -> None:
+        if self.scale == 1:
+            self.window.blit(self.screen, (0, 0))
+        else:
+            pygame.transform.scale(self.screen, self.window.get_size(), self.window)
+        pygame.display.flip()
+
+    def _note_error(self) -> None:
+        import traceback
+
+        text = traceback.format_exc()
+        last = text.strip().splitlines()[-1] if text.strip() else "сбой"
+        self.status = last[:90]
+        self.error_line = None
+        if getattr(sys, "frozen", False):
+            try:
+                Path(sys.executable).resolve().parent.joinpath("argonaut.log").write_text(text, encoding="utf-8")
+            except OSError:
+                pass
+
     def loop(self) -> None:
         pygame.key.start_text_input()
         while self.alive:
             self.clock.tick(60)
             for event in pygame.event.get():
-                self.on_event(event)
-            self.tick()
-            self.draw()
-            pygame.display.flip()
+                try:
+                    self.on_event(event)
+                except Exception:
+                    self._note_error()
+            try:
+                self.tick()
+                self.draw()
+            except Exception:
+                self._note_error()
+            self._present()
         pygame.quit()
 
 
@@ -1114,6 +1193,8 @@ def main(argv: list[str] | None = None) -> None:
         out.mkdir(parents=True, exist_ok=True)
         app.draw()
         pygame.image.save(app.screen, str(out / "argonaut-code.png"))
+        app.on_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"pos": (80, 140), "button": 1}))
+        app.on_event(pygame.event.Event(pygame.MOUSEBUTTONUP, {"pos": (90, 160), "button": 1}))
         app.run_cart()
         for _ in range(12):
             app.tick()
