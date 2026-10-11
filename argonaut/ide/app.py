@@ -15,6 +15,7 @@ from argonaut.ide import theme as T
 from argonaut.ide.code_editor import CodeEditor
 from argonaut.machine.machine import Machine
 from argonaut.machine.ppu import rgb555_to_888
+from argonaut.paths import cart_dir, font_file
 from argonaut.tpython.errors import TPyError
 
 W, H = 1280, 800
@@ -65,10 +66,6 @@ def _draw():
 """
 
 
-def cart_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "carts"
-
-
 def _safe(name: str) -> str:
     cleaned = "".join(ch for ch in name.strip() if ch.isalnum() or ch in "-_")
     return cleaned or "untitled"
@@ -113,9 +110,15 @@ class App:
         pygame.display.set_caption("Argonaut Legacy")
         self.screen = pygame.display.set_mode((W, H))
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.SysFont("dejavusansmono", 16)
-        self.small = pygame.font.SysFont("dejavusansmono", 13)
-        self.big = pygame.font.SysFont("dejavusansmono", 22)
+        face = font_file()
+        if face.is_file():
+            self.font = pygame.font.Font(str(face), 16)
+            self.small = pygame.font.Font(str(face), 13)
+            self.big = pygame.font.Font(str(face), 22)
+        else:
+            self.font = pygame.font.SysFont("dejavusansmono", 16)
+            self.small = pygame.font.SysFont("dejavusansmono", 13)
+            self.big = pygame.font.SysFont("dejavusansmono", 22)
         self.cart = make_demo()
         self._normalize()
         self.code = CodeEditor(self.cart.code)

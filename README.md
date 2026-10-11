@@ -62,12 +62,14 @@ MIT. Консоль можно форкать, встраивать и прод�
 
 ## Запуск
 
-Нужен Python 3.10+ и pygame.
+Нужен Python 3.10+ и pygame, если собираете из исходников.
 
 ```bash
 pip install -r requirements.txt
 python -m argonaut
 ```
+
+Готовый Windows без Python: [релизы](https://github.com/Nasty1028339219182/argonaut-legacy/releases). `ArgonautLegacy-portable.exe` — один файл, его можно переносить куда угодно. Рядом появится папка `carts`. Архив `ArgonautLegacy-windows.zip` — та же консоль папкой, если одиночный файл режет антивирус: распаковали и запустили `ArgonautLegacy.exe`. Установщика нет.
 
 Проверка без окна:
 

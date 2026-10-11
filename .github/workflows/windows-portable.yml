@@ -1,0 +1,79 @@
+name: Windows portable
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pyinstaller
+
+      - name: Build folder and single exe
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --onedir --name ArgonautLegacy `
+            --add-data "argonaut/fonts/DejaVuSansMono.ttf;fonts" `
+            --add-data "argonaut/fonts/LICENSE-dejavu.txt;fonts" `
+            --add-data "carts/ferry.alc;carts" `
+            --collect-all pygame `
+            --collect-submodules argonaut `
+            launcher.py
+          pyinstaller --noconfirm --clean --windowed --onefile --name ArgonautLegacy `
+            --distpath dist-onefile --workpath build-onefile `
+            --add-data "argonaut/fonts/DejaVuSansMono.ttf;fonts" `
+            --add-data "argonaut/fonts/LICENSE-dejavu.txt;fonts" `
+            --add-data "carts/ferry.alc;carts" `
+            --collect-all pygame `
+            --collect-submodules argonaut `
+            launcher.py
+          New-Item -ItemType Directory -Force -Path dist\ArgonautLegacy\carts | Out-Null
+          Copy-Item carts\ferry.alc dist\ArgonautLegacy\carts\
+          Copy-Item LICENSE dist\ArgonautLegacy\
+          Copy-Item argonaut\fonts\LICENSE-dejavu.txt dist\ArgonautLegacy\
+          $ver = "${{ github.ref_name }}".TrimStart("v")
+          if (-not $ver) { $ver = "0.1.1" }
+          Compress-Archive -Path dist\ArgonautLegacy -DestinationPath "ArgonautLegacy-$ver-windows.zip" -Force
+          Copy-Item dist-onefile\ArgonautLegacy.exe "ArgonautLegacy-$ver-portable.exe"
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$tag" != v* ]]; then
+            echo "build only; release is published from a version tag"
+            exit 0
+          fi
+          cat > notes.md <<'EOF'
+          Portable-сборка для Windows. Python ставить не нужно.
+
+          - Файл `*-portable.exe` — одна программа. Кладёте куда угодно и запускаете. Кассеты появятся в папке `carts` рядом с файлом.
+          - Zip — та же консоль папкой, если антивирус ругается на один файл. Распакуйте и запустите `ArgonautLegacy.exe`.
+
+          Установщика нет. Скопировали файл или папку на другой компьютер — консоль на месте.
+
+          Ctrl+R пускает кассету. Esc возвращает в редакторы. F1 — справка.
+          EOF
+          sed -i 's/^          //' notes.md
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber ArgonautLegacy-*.zip ArgonautLegacy-*-portable.exe
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "Argonaut Legacy ${tag#v}" --notes-file notes.md ArgonautLegacy-*.zip ArgonautLegacy-*-portable.exe
+          fi

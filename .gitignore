@@ -4,3 +4,7 @@ __pycache__/
 *.alc
 !carts/ferry.alc
 .DS_Store
+build/
+dist/
+dist-onefile/
+*.spec
