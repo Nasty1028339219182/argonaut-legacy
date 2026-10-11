@@ -50,7 +50,7 @@ class Parser:
         tok = self.accept(kind)
         if tok is None:
             got = self.peek()
-            raise TPyError(f"ожидалось {kind}, а тут {got.kind}", got.line or 1)
+            raise TPyError("expected-token", got.line or 1, kind=kind, got=got.kind)
         return tok
 
     def parse(self) -> Program:
@@ -59,14 +59,14 @@ class Parser:
             if self.accept("NEWLINE"):
                 continue
             if self.check("DEDENT"):
-                raise TPyError("лишний отступ", self.peek().line or 1)
+                raise TPyError("extra-indent", self.peek().line or 1)
             stmts.append(self.statement())
         return Program(stmts)
 
     def block(self) -> list:
         self.expect("NEWLINE")
         if not self.accept("INDENT"):
-            raise TPyError("нужен отступ; пустой блок пишите как pass", self.peek().line or 1)
+            raise TPyError("need-indent", self.peek().line or 1)
         stmts = []
         while not self.check("DEDENT") and not self.check("EOF"):
             if self.accept("NEWLINE"):
@@ -100,7 +100,7 @@ class Parser:
         expr = self.expr()
         if self.accept("EQ"):
             if not isinstance(expr, (Name, Index)):
-                raise TPyError("слева от = нужно имя или элемент списка", expr.line)
+                raise TPyError("bad-assign", expr.line)
             value = self.expr()
             self.expect("NEWLINE")
             return Assign(expr, value, expr.line)
@@ -143,7 +143,7 @@ class Parser:
                 break
             args.append(self.expr())
         if len(args) > 3:
-            raise TPyError("у range максимум три аргумента", line)
+            raise TPyError("range-args", line)
         self.expect("RPAREN")
         self.expect("COLON")
         body = self.block()
@@ -162,7 +162,7 @@ class Parser:
                 params.append(self.expect("NAME").text)
         self.expect("RPAREN")
         if len(params) > 6:
-            raise TPyError("не больше 6 аргументов", line)
+            raise TPyError("max-args", line)
         self.expect("COLON")
         body = self.block()
         return Func(name.text, params, body, line)
@@ -298,7 +298,7 @@ class Parser:
             while True:
                 if self.accept("LPAREN"):
                     if not isinstance(node, Name):
-                        raise TPyError("вызов только по имени функции", tok.line)
+                        raise TPyError("call-name", tok.line)
                     args = self.arg_list()
                     self.expect("RPAREN")
                     node = Call(node.name, args, tok.line)
@@ -324,7 +324,7 @@ class Parser:
             self.expect("RBRACK")
             return ListLit(elts, tok.line)
         tok = self.peek()
-        raise TPyError(f"ожидалось выражение, а тут {tok.kind}", tok.line or 1)
+        raise TPyError("expected-expr", tok.line or 1, got=tok.kind)
 
     def arg_list(self) -> list:
         if self.check("RPAREN"):

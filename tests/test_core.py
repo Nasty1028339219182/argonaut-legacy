@@ -16,7 +16,9 @@ from argonaut.hw import (
     cycles_for_frame,
 )
 from argonaut.machine.cpu import CPU
+from argonaut.machine.isa import OP_LDR, enc_imm
 from argonaut.machine.memory import Memory
+from argonaut.machine.ppu import PPU
 
 
 def _run(source: str, budget: int = 10000):
@@ -200,6 +202,52 @@ loop:
         self.assertGreaterEqual(cpu.cycles, 50)
         self.assertLess(cpu.cycles, 60)
         self.assertGreater(cpu.r[1], 0)
+
+    def test_rom_data_wait_is_one_and_sram_is_zero(self):
+        mem = Memory()
+        word = enc_imm(OP_LDR, 1, 2, 0)
+        mem.rom[0:4] = word.to_bytes(4, "little")
+        mem.rom[8:12] = (0x11223344).to_bytes(4, "little")
+        cpu = CPU(mem)
+        cpu.reset(ROM_BASE)
+        cpu.r[2] = ROM_BASE + 8
+        cpu.step()
+        self.assertEqual(cpu.r[1], 0x11223344)
+        self.assertEqual(cpu.cycles, 3)
+
+        mem.sram[32:36] = (7).to_bytes(4, "little")
+        cpu.cycles = 0
+        cpu.pc = ROM_BASE
+        cpu.r[2] = 32
+        cpu.step()
+        self.assertEqual(cpu.r[1], 7)
+        self.assertEqual(cpu.cycles, 2)
+
+    def test_transparent_sprite_texel_costs_a_cycle(self):
+        mem = Memory()
+        cpu = CPU(mem)
+        ppu = PPU(mem)
+        mem.cpu = cpu
+        ppu.gfx_addr = ROM_BASE
+        ppu.spr(0, 0, 0, 1, 1)
+        self.assertEqual(cpu.cycles, 64)
+        self.assertEqual(mem.fb_index(0), 0)
+
+    def test_pattern_row_and_note_cost(self):
+        from argonaut.machine.apu import APU
+
+        apu = APU()
+        apu.instruments = [{"wave": "square", "volume": 100}] * 8
+        apu.pattern = [["C4", "", "", "", "", "", "", ""]]
+        apu.playing = True
+        apu.bpm = 900
+        apu.tick_frame()
+        self.assertEqual(apu.take_spent(), 56)
+        apu.pattern = [["", "", "", "", "", "", "", ""]]
+        apu.row = 0
+        apu.accum = 0
+        apu.tick_frame()
+        self.assertEqual(apu.take_spent(), 48)
 
 
 if __name__ == "__main__":

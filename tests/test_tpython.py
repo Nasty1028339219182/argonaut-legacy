@@ -206,6 +206,85 @@ def _update():
         )
         self.assertEqual(m.late, 1)
 
+    def test_line_circle_and_clip(self):
+        m = run_code(
+            """
+def _draw():
+    cls(0)
+    line(2, 2, 6, 2, 1)
+    circ(20, 20, 4, 1)
+    circfill(40, 20, 2, 2)
+    clip(0, 0, 3, 3)
+    pset(10, 10, 3)
+    pset(1, 1, 3)
+"""
+        )
+        self.assertEqual(m.read_pixel(2, 2), 1)
+        self.assertEqual(m.read_pixel(6, 2), 1)
+        self.assertEqual(m.read_pixel(24, 20), 1)
+        self.assertEqual(m.read_pixel(40, 20), 2)
+        self.assertEqual(m.read_pixel(10, 10), 0)
+        self.assertEqual(m.read_pixel(1, 1), 3)
+        m2 = run_code(
+            """
+def _draw():
+    cls(1)
+    if frame() == 0:
+        clip(0, 0, 2, 2)
+    pset(8, 8, 2)
+""",
+            frames=2,
+        )
+        self.assertEqual(m2.read_pixel(8, 8), 1)
+
+    def test_fget_fset_roundtrip(self):
+        cart = cart_with(
+            """
+def _draw():
+    fset(3, 1, 1)
+    fset(3, 0, 0)
+    pset(0, 0, fget(3, 1))
+    pset(1, 0, fget(3))
+"""
+        )
+        cart.flags[4] = 0b101
+        m = Machine()
+        m.load(cart)
+        self.assertEqual(m.pull_flags()[4], 0b101)
+        m.frame()
+        self.assertEqual(m.read_pixel(0, 0), 1)
+        self.assertEqual(m.read_pixel(1, 0), 2)
+        self.assertEqual(m.pull_flags()[3] & 0b11, 0b10)
+        self.assertEqual(m.mem.fault, 0)
+
+    def test_unknown_name_is_a_key(self):
+        with self.assertRaises(TPyError) as caught:
+            run_code(
+                """
+def _draw():
+    nope()
+"""
+            )
+        self.assertEqual(caught.exception.key, "unknown-name")
+        self.assertEqual(caught.exception.fmt["name"], "nope")
+
+
+class I18nTests(unittest.TestCase):
+    def test_both_languages_cover_the_same_keys(self):
+        from argonaut.ide import i18n
+
+        self.assertEqual(set(i18n.EN), set(i18n.RU))
+        prev = i18n.lang()
+        i18n.set_lang("en", persist=False)
+        en = i18n.tr("unknown-name", name="nope")
+        i18n.set_lang("ru", persist=False)
+        ru = i18n.tr("unknown-name", name="nope")
+        i18n.set_lang(prev, persist=False)
+        self.assertIn("nope", en)
+        self.assertIn("nope", ru)
+        self.assertNotEqual(en, ru)
+
 
 if __name__ == "__main__":
     unittest.main()
+

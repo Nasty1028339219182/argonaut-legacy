@@ -6,8 +6,12 @@ from string import Template
 
 from argonaut.hw import (
     AUDIO_BASE,
+    CMD_CIRC,
+    CMD_CIRCFILL,
+    CMD_CLIP,
     CMD_CLS,
     CMD_FILL,
+    CMD_LINE,
     CMD_MAP,
     CMD_PGET,
     CMD_PSET,
@@ -19,6 +23,7 @@ from argonaut.hw import (
     FAULT_DIV0,
     FAULT_HEAP,
     FAULT_INDEX,
+    FLAG_BASE,
     HEAP_INIT,
     HEAP_PTR,
     LIST_MAGIC,
@@ -229,6 +234,80 @@ fn_sfx:
 fn_music:
     LUI R7, $apu_hi
     STR R1, R7, $apu_music
+    JR LR
+
+fn_line:
+    LUI R7, $ppu_hi
+    STR R1, R7, $ppu_x
+    STR R2, R7, $ppu_y
+    STR R3, R7, $ppu_w
+    STR R4, R7, $ppu_h
+    STR R5, R7, $ppu_color
+    ADDI R8, R0, $cmd_line
+    STR R8, R7, 0
+    JR LR
+
+fn_circ:
+    LUI R7, $ppu_hi
+    STR R1, R7, $ppu_x
+    STR R2, R7, $ppu_y
+    STR R3, R7, $ppu_w
+    STR R4, R7, $ppu_color
+    ADDI R8, R0, $cmd_circ
+    STR R8, R7, 0
+    JR LR
+
+fn_circfill:
+    LUI R7, $ppu_hi
+    STR R1, R7, $ppu_x
+    STR R2, R7, $ppu_y
+    STR R3, R7, $ppu_w
+    STR R4, R7, $ppu_color
+    ADDI R8, R0, $cmd_circfill
+    STR R8, R7, 0
+    JR LR
+
+fn_clip:
+    LUI R7, $ppu_hi
+    STR R1, R7, $ppu_x
+    STR R2, R7, $ppu_y
+    STR R3, R7, $ppu_w
+    STR R4, R7, $ppu_h
+    ADDI R8, R0, $cmd_clip
+    STR R8, R7, 0
+    JR LR
+
+fn_fget:
+    LI R7, $flag_base
+    ADD R7, R7, R1
+    LDRB R8, R7, 0
+    ADDI R9, R0, -1
+    CMP R2, R9
+    BEQ fget_byte
+    ANDI R2, R2, 7
+    SHR R8, R8, R2
+    ANDI R1, R8, 1
+    JR LR
+fget_byte:
+    MOV R1, R8
+    JR LR
+
+fn_fset:
+    LI R7, $flag_base
+    ADD R7, R7, R1
+    LDRB R8, R7, 0
+    ANDI R2, R2, 7
+    ADDI R9, R0, 1
+    SHL R9, R9, R2
+    CMP R3, R0
+    BEQ fset_clear
+    OR R8, R8, R9
+    B fset_put
+fset_clear:
+    MVN R9, R9
+    AND R8, R8, R9
+fset_put:
+    STRB R8, R7, 0
     JR LR
 
 fn_abs:
@@ -726,6 +805,11 @@ rnd_zero:
         cmd_map=CMD_MAP,
         cmd_text_str=CMD_TEXT_STR,
         cmd_text_num=CMD_TEXT_NUM,
+        cmd_line=CMD_LINE,
+        cmd_circ=CMD_CIRC,
+        cmd_circfill=CMD_CIRCFILL,
+        cmd_clip=CMD_CLIP,
+        flag_base=FLAG_BASE,
         str_magic=STR_MAGIC,
         list_magic=LIST_MAGIC,
         fault_heap=FAULT_HEAP,

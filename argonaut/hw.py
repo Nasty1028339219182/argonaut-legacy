@@ -12,6 +12,13 @@ PIXELS = SCREEN_W * SCREEN_H
 FB_BYTES = PIXELS * 2  # 153_600 = 150 KiB
 PALETTE_SLOTS = 511  # indices 0..510
 PIXEL_BUDGET = PIXELS  # blitter writes per frame after the free clear
+PIXEL_CYCLE = 1  # one guest cycle per pixel the blitter inspects
+WAIT_ROM = 1  # extra cycles on a data read/write in cartridge ROM
+WAIT_MMIO = 2  # extra cycles on framebuffer, palette, and device ports
+FLAG_BASE = 0x00000100
+FLAG_BYTES = 256
+APU_ROW_CYCLES = 48
+APU_NOTE_CYCLES = 8
 
 SRAM_BASE = 0x00000000
 SRAM_SIZE = 512 * 1024
@@ -63,6 +70,10 @@ CMD_TEXT_STR = 8
 CMD_TEXT_NUM = 9
 CMD_PGET = 10
 CMD_RECT = 11
+CMD_LINE = 12
+CMD_CIRC = 13
+CMD_CIRCFILL = 14
+CMD_CLIP = 15
 
 # SYS
 SYS_CYCLES = 0

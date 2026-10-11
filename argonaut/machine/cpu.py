@@ -100,6 +100,9 @@ class CPU:
         res_s = s32(result)
         self.v = 1 if ((rs_s < 0) != (rt_s < 0)) and ((res_s < 0) != (rs_s < 0)) else 0
 
+    def _touch(self, addr: int) -> None:
+        self.cycles += self.mem.wait(addr)
+
     def step(self) -> None:
         word = self.mem.read_exec(self.pc)
         if word is None:
@@ -139,22 +142,34 @@ class CPU:
             self._write_reg(rd, (imm & 0xFFFF) << 16)
             return
         if op == OP_LDR:
-            self._write_reg(rd, self.mem.read32((rr(rs) + sext16(imm)) & 0xFFFFFFFF))
+            addr = (rr(rs) + sext16(imm)) & 0xFFFFFFFF
+            self._touch(addr)
+            self._write_reg(rd, self.mem.read32(addr))
             return
         if op == OP_STR:
-            self.mem.write32((rr(rs) + sext16(imm)) & 0xFFFFFFFF, rr(rd))
+            addr = (rr(rs) + sext16(imm)) & 0xFFFFFFFF
+            self._touch(addr)
+            self.mem.write32(addr, rr(rd))
             return
         if op == OP_LDRB:
-            self._write_reg(rd, self.mem.read8((rr(rs) + sext16(imm)) & 0xFFFFFFFF))
+            addr = (rr(rs) + sext16(imm)) & 0xFFFFFFFF
+            self._touch(addr)
+            self._write_reg(rd, self.mem.read8(addr))
             return
         if op == OP_STRB:
-            self.mem.write8((rr(rs) + sext16(imm)) & 0xFFFFFFFF, rr(rd) & 0xFF)
+            addr = (rr(rs) + sext16(imm)) & 0xFFFFFFFF
+            self._touch(addr)
+            self.mem.write8(addr, rr(rd) & 0xFF)
             return
         if op == OP_LDRH:
-            self._write_reg(rd, self.mem.read16((rr(rs) + sext16(imm)) & 0xFFFFFFFF))
+            addr = (rr(rs) + sext16(imm)) & 0xFFFFFFFF
+            self._touch(addr)
+            self._write_reg(rd, self.mem.read16(addr))
             return
         if op == OP_STRH:
-            self.mem.write16((rr(rs) + sext16(imm)) & 0xFFFFFFFF, rr(rd) & 0xFFFF)
+            addr = (rr(rs) + sext16(imm)) & 0xFFFFFFFF
+            self._touch(addr)
+            self.mem.write16(addr, rr(rd) & 0xFFFF)
             return
         if op == OP_SHLI:
             self._write_reg(rd, (rr(rs) << rt) & 0xFFFFFFFF)
@@ -266,8 +281,10 @@ class CPU:
         for i in range(15):
             if mask & (1 << i):
                 if load:
+                    self._touch(addr)
                     self._write_reg(i, self.mem.read32(addr & 0xFFFFFFFF))
                 else:
+                    self._touch(addr)
                     self.mem.write32(addr & 0xFFFFFFFF, self.r[i])
                 addr = (addr + 4) & 0xFFFFFFFF
         if writeback:

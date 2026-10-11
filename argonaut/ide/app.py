@@ -14,6 +14,7 @@ from argonaut.demo import PALETTE, make_demo
 from argonaut.hw import PALETTE_SLOTS, SCREEN_H, SCREEN_W, cycles_for_frame
 from argonaut.ide import theme as T
 from argonaut.ide.code_editor import CodeEditor
+from argonaut.ide.i18n import blank_source, explain, help_lines, lang, toggle_lang, tr
 from argonaut.machine.machine import Machine
 from argonaut.machine.ppu import rgb555_to_888
 from argonaut.paths import cart_dir, font_file
@@ -52,19 +53,6 @@ PIANO = {
     pygame.K_j: "A#",
     pygame.K_m: "B",
 }
-
-NEW_CODE = """# Новая кассета. Ctrl+R — пуск, Esc — стоп, F1 — справка.
-
-def _init():
-    pass
-
-def _update():
-    pass
-
-def _draw():
-    cls(0)
-    text("ARGONAUT", 96, 100, 1)
-"""
 
 
 def _sharp_display() -> None:
@@ -166,7 +154,7 @@ class App:
         self.audio = AudioOut()
         self.mode = "code"
         self.prev_mode = "code"
-        self.status = "THOTH-Core 20.00 МГц готов.  Ctrl+R — пуск."
+        self.status = tr("ready")
         self.error_line = None
         self.overlay = None
         self.prompt = ""
@@ -178,6 +166,9 @@ class App:
         self.gfx_page = 0
         self.gfx_grid = True
         self.gfx_fill = False
+        self.gfx_focus = 1
+        self.gfx_undo: list[tuple] = []
+        self.gfx_redo: list[tuple] = []
         self.map_sprite = 1
         self.map_ox = 0
         self.map_oy = 0
@@ -214,6 +205,11 @@ class App:
         for i, row in enumerate(self.cart.sfx):
             if not isinstance(row, list):
                 self.cart.sfx[i] = []
+        if not isinstance(self.cart.flags, list):
+            self.cart.flags = []
+        self.cart.flags = [int(v) & 255 for v in self.cart.flags[:256]]
+        while len(self.cart.flags) < 256:
+            self.cart.flags.append(0)
 
     def sync(self) -> None:
         self.cart.code = self.code.source()
@@ -265,19 +261,23 @@ class App:
             self.machine.load(self.cart)
         except (TPyError, AsmError) as exc:
             self.error_line = getattr(exc, "line", None)
-            self.status = f"сборка: {exc}"
+            self.status = tr("build-fail", msg=explain(exc))
             self.mode = "code"
             return
         self.error_line = None
         self.prev_mode = self.mode if self.mode != "run" else self.prev_mode
         self.mode = "run"
-        self.status = "пуск.  Esc — в редактор.  Стрелки или WASD, Z/X — кнопки."
+        self.status = tr("running")
 
     def stop_run(self) -> None:
         if self.mode == "run":
+            try:
+                self.cart.flags = self.machine.pull_flags()
+            except Exception:
+                pass
             self.mode = self.prev_mode or "code"
             spent = self.machine.cpu.cycles
-            self.status = f"стоп.  кадр съел {spent} тактов."
+            self.status = tr("stopped", n=spent)
 
     def save(self, name: str | None = None) -> None:
         self.sync()
@@ -287,25 +287,29 @@ class App:
         folder.mkdir(exist_ok=True)
         path = folder / f"{_safe(self.cart.name)}.alc"
         path.write_text(self.cart.to_json(), encoding="utf-8")
-        self.status = f"кассета записана: {path.name}"
+        self.status = tr("saved", name=path.name)
 
-    def load_path(self, path: Path) -> None:
+    def load_path(self, path: Path) -> bool:
         try:
             self.cart = Cart.from_json(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, KeyError) as exc:
-            self.status = f"не читается: {exc}"
-            return
+            self.status = tr("unreadable", msg=exc)
+            return False
         self.code.set_source(self.cart.code)
         self._normalize()
+        self.gfx_undo.clear()
+        self.gfx_redo.clear()
         self.error_line = None
         self.mode = "code"
-        self.status = f"вставлена кассета {self.cart.name}"
+        self.status = tr("loaded", name=self.cart.name)
+        return True
 
     def new_cart(self) -> None:
         instruments, pattern, sfx = blank_sound()
+        source = blank_source()
         self.cart = Cart(
             name="untitled",
-            code=NEW_CODE,
+            code=source,
             palette=list(PALETTE),
             gfx=bytearray(128 * 128),
             map_cells=[0] * (128 * 32),
@@ -313,9 +317,11 @@ class App:
             pattern=pattern,
             sfx=sfx,
         )
-        self.code.set_source(NEW_CODE)
+        self.code.set_source(source)
+        self.gfx_undo.clear()
+        self.gfx_redo.clear()
         self.mode = "code"
-        self.status = "пустая кассета"
+        self.status = tr("empty-cart")
 
     def command(self, line: str) -> None:
         parts = line.strip().split()
@@ -332,11 +338,11 @@ class App:
         elif cmd == "load" and rest:
             path = cart_dir() / f"{_safe(rest[0])}.alc"
             if not path.exists():
-                self.status = "нет такой кассеты"
+                self.status = tr("no-cart")
             else:
                 self.load_path(path)
         else:
-            self.status = "команды: run, new, save имя, load имя"
+            self.status = tr("commands")
 
     def on_event(self, event) -> None:
         event = self._logical_event(event)
@@ -345,6 +351,19 @@ class App:
             return
         if event.type == pygame.KEYDOWN and event.key == pygame.K_q and event.mod & pygame.KMOD_CTRL:
             self.alive = False
+            return
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_F7 and self.overlay != "prompt":
+            toggle_lang()
+            self.status = tr("lang-now")
+            return
+        if (
+            event.type == pygame.MOUSEBUTTONDOWN
+            and event.button == 1
+            and self.overlay != "prompt"
+            and self._lang_rect().collidepoint(event.pos)
+        ):
+            toggle_lang()
+            self.status = tr("lang-now")
             return
         if self.overlay == "help":
             if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
@@ -403,6 +422,19 @@ class App:
                 return
             if event.key == pygame.K_F6:
                 self._set_mode("sfx")
+                return
+            if (
+                self.mode == "gfx"
+                and event.mod & pygame.KMOD_CTRL
+                and event.key == pygame.K_z
+            ):
+                if event.mod & pygame.KMOD_SHIFT:
+                    self._gfx_redo_do()
+                else:
+                    self._gfx_undo_do()
+                return
+            if self.mode == "gfx" and event.mod & pygame.KMOD_CTRL and event.key == pygame.K_y:
+                self._gfx_redo_do()
                 return
         if self.mode == "run":
             return
@@ -484,6 +516,53 @@ class App:
         elif event.type == pygame.TEXTINPUT:
             self.prompt += event.text
 
+    def _gfx_snapshot(self) -> tuple:
+        flags = [int(v) & 255 for v in self.cart.flags[:256]]
+        while len(flags) < 256:
+            flags.append(0)
+        palette = [tuple(color) for color in self.cart.palette]
+        return bytes(self.cart.gfx), flags, palette
+
+    def _gfx_push_undo(self) -> None:
+        self.gfx_undo.append(self._gfx_snapshot())
+        if len(self.gfx_undo) > 40:
+            del self.gfx_undo[:-40]
+        self.gfx_redo.clear()
+
+    def _gfx_restore(self, snap: tuple) -> None:
+        gfx, flags, palette = snap
+        self.cart.gfx[:] = gfx
+        self.cart.flags = list(flags)
+        self.cart.palette = [tuple(color) for color in palette]
+
+    def _gfx_undo_do(self) -> None:
+        if not self.gfx_undo:
+            return
+        self.gfx_redo.append(self._gfx_snapshot())
+        self._gfx_restore(self.gfx_undo.pop())
+
+    def _gfx_redo_do(self) -> None:
+        if not self.gfx_redo:
+            return
+        self.gfx_undo.append(self._gfx_snapshot())
+        self._gfx_restore(self.gfx_redo.pop())
+
+    def _toggle_flag(self, bit: int, record: bool = True) -> None:
+        if record:
+            self._gfx_push_undo()
+        sid = self.gfx_focus & 255
+        while len(self.cart.flags) < 256:
+            self.cart.flags.append(0)
+        mask = 1 << (bit & 7)
+        self.cart.flags[sid] = (int(self.cart.flags[sid]) ^ mask) & 255
+
+    def _gfx_edits(self, pos) -> bool:
+        return bool(
+            self._gfx_canvas().collidepoint(pos)
+            or self._flag_at(pos) is not None
+            or self._channel_at(pos) is not None
+        )
+
     def _gfx_event(self, event) -> None:
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_g:
@@ -494,7 +573,13 @@ class App:
                 self.gfx_page = max(0, self.gfx_page - 1)
             elif event.key == pygame.K_RIGHTBRACKET:
                 self.gfx_page = min((PALETTE_SLOTS - 1) // 32, self.gfx_page + 1)
+            elif pygame.K_1 <= event.key <= pygame.K_8 and not (
+                event.mod & (pygame.KMOD_CTRL | pygame.KMOD_ALT)
+            ):
+                self._toggle_flag(event.key - pygame.K_1)
         if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1 and self._gfx_edits(event.pos):
+                self._gfx_push_undo()
             self._gfx_mouse(event.pos, event.button, True)
         elif event.type == pygame.MOUSEMOTION and event.buttons[0]:
             self._gfx_mouse(event.pos, 1, False)
@@ -506,6 +591,7 @@ class App:
             y = (pos[1] - canvas.y) // 4
             if not (0 <= x < 128 and 0 <= y < 128):
                 return
+            self.gfx_focus = (y // 8) * 16 + (x // 8)
             if button == 3:
                 self.gfx_color = self.cart.gfx[y * 128 + x]
                 return
@@ -517,6 +603,10 @@ class App:
         sw = self._swatch_at(pos)
         if sw is not None and click:
             self.gfx_color = sw
+            return
+        flag = self._flag_at(pos)
+        if flag is not None and click and button == 1:
+            self._toggle_flag(flag, record=False)
             return
         ch = self._channel_at(pos)
         if ch is not None and click:
@@ -720,16 +810,10 @@ class App:
         return pygame.Rect(0, TOP, W, H - TOP - BOT)
 
     def _tab_rects(self) -> list[tuple[str, pygame.Rect]]:
-        labels = [
-            ("code", "КОД"),
-            ("gfx", "СПРАЙТЫ"),
-            ("map", "КАРТА"),
-            ("snd", "МУЗЫКА"),
-            ("sfx", "ЭФФЕКТЫ"),
-        ]
+        labels = ("code", "gfx", "map", "snd", "sfx")
         rects = []
         x = 300
-        for mode, _label in labels:
+        for mode in labels:
             rect = pygame.Rect(x, 12, 112, 32)
             rects.append((mode, rect))
             x += 118
@@ -742,6 +826,9 @@ class App:
             if rect.collidepoint(pos):
                 return mode
         return None
+
+    def _lang_rect(self) -> pygame.Rect:
+        return pygame.Rect(908, 14, 78, 28)
 
     def _draw_top(self) -> None:
         pygame.draw.rect(self.screen, T.BG2, (0, 0, W, TOP))
@@ -757,42 +844,53 @@ class App:
             pygame.draw.rect(self.screen, T.BG if not active else (28, 40, 36), rect, border_radius=3)
             if active:
                 pygame.draw.line(self.screen, T.AMBER, (rect.x + 8, rect.bottom - 3), (rect.right - 8, rect.bottom - 3), 2)
-            label = {
-                "code": "КОД",
-                "gfx": "СПРАЙТЫ",
-                "map": "КАРТА",
-                "snd": "МУЗЫКА",
-                "sfx": "ЭФФЕКТЫ",
-            }[mode]
+            label = tr("tab-" + mode)
             img = self.small.render(label, True, T.AMBER if active else T.INK)
             self.screen.blit(img, img.get_rect(center=rect.center))
+        self._draw_lang()
         if self.mode == "run":
             late = self.machine.late
             lamp = T.RED if late else T.TEAL
             pygame.draw.circle(self.screen, lamp, (1040, 28), 6)
-            word = "LATE" if late else "ПУСК"
+            word = "LATE" if late else tr("run-lamp")
             self.screen.blit(self.small.render(word, True, lamp), (1054, 20))
             budget = cycles_for_frame(max(0, self.machine.frame_index - 1))
             spent = self.machine.cpu.cycles
             self.screen.blit(self.small.render(f"{spent} / {budget}", True, T.PAPER), (1120, 20))
+
+    def _draw_lang(self) -> None:
+        rect = self._lang_rect()
+        pygame.draw.rect(self.screen, T.BG, rect, border_radius=3)
+        pygame.draw.rect(self.screen, T.TEAL, rect, 1, border_radius=3)
+        current = lang()
+        en = self.small.render("EN", True, T.AMBER if current == "en" else T.MUTED)
+        ru = self.small.render("RU", True, T.AMBER if current == "ru" else T.MUTED)
+        self.screen.blit(en, (rect.x + 8, rect.y + 6))
+        self.screen.blit(ru, (rect.x + 40, rect.y + 6))
 
     def _draw_bot(self) -> None:
         y = H - BOT
         pygame.draw.rect(self.screen, T.BG2, (0, y, W, BOT))
         pygame.draw.line(self.screen, T.LINE, (0, y), (W, y))
         if self.mode == "code":
-            where = f"стр {self.code.cy + 1}  стлб {self.code.cx + 1}"
+            where = tr("bot-code", line=self.code.cy + 1, col=self.code.cx + 1)
         elif self.mode == "gfx":
-            where = f"цвет {self.gfx_color}  {'заливка' if self.gfx_fill else 'кисть'}  G сетка  F заливка"
+            tool = tr("tool-fill") if self.gfx_fill else tr("tool-brush")
+            where = tr("bot-gfx", c=self.gfx_color, tool=tool)
         elif self.mode == "map":
-            where = f"тайл {self.map_sprite}  стрелки — камера  [ ] спрайт"
+            where = tr("bot-map", n=self.map_sprite)
         elif self.mode == "snd":
-            where = f"окт {self.snd_oct}  Z–M ноты  Tab волна  пробел слушать"
+            where = tr("bot-snd", n=self.snd_oct)
         elif self.mode == "sfx":
-            where = f"sfx {self.sfx_slot}  окт {self.snd_oct}  Z–M нота  пробел слушать"
+            where = tr("bot-sfx", n=self.sfx_slot, o=self.snd_oct)
         else:
             uniq = self.machine.ppu.unique_colors()
-            where = f"цвета {uniq}/511  палитра отсечено {self.machine.mem.pal_clip}  fault {self.machine.mem.fault}"
+            where = tr(
+                "bot-run",
+                u=uniq,
+                c=self.machine.mem.pal_clip,
+                f=self.machine.mem.fault,
+            )
         left = self.small.render(f"{self.cart.name}.alc", True, T.TEAL)
         self.screen.blit(left, (12, y + 8))
         mid = self.small.render(self.status[:90], True, T.CLAY if self.error_line else T.MUTED)
@@ -835,11 +933,11 @@ class App:
             pygame.draw.rect(self.screen, T.BG, (x, panel.y + 146, 14, 36))
             if h:
                 pygame.draw.rect(self.screen, T.TEAL, (x, panel.y + 146 + 36 - h, 14, h))
-        self._label(self.small, "ЖУРНАЛ", T.AMBER, panel.x + 16, panel.y + 200)
+        self._label(self.small, tr("log"), T.AMBER, panel.x + 16, panel.y + 200)
         for i, line in enumerate(self.machine.log_lines[-8:]):
             self._label(self.small, line[:28], T.PAPER, panel.x + 16, panel.y + 222 + i * 18)
-        self._label(self.small, "A влево  D вправо", T.MUTED, panel.x + 16, panel.bottom - 48)
-        self._label(self.small, "Z кнопка A   X кнопка B", T.MUTED, panel.x + 16, panel.bottom - 28)
+        self._label(self.small, tr("run-a"), T.MUTED, panel.x + 16, panel.bottom - 48)
+        self._label(self.small, tr("run-zx"), T.MUTED, panel.x + 16, panel.bottom - 28)
 
     def _gfx_canvas(self) -> pygame.Rect:
         return pygame.Rect(24, TOP + 20, 512, 512)
@@ -862,17 +960,46 @@ class App:
                 pygame.draw.line(sheet, (60, 70, 66), (0, t), (127, t))
         self.screen.blit(pygame.transform.scale(sheet, (512, 512)), canvas.topleft)
         pygame.draw.rect(self.screen, T.AMBER_DIM, canvas, 1)
-        self._label(self.small, "ПАЛИТРА  [ ] страница", T.AMBER, 560, TOP + 20)
+        self._label(self.small, tr("gfx-pal"), T.AMBER, 560, TOP + 20)
         self._draw_swatches(560, TOP + 44)
-        self._label(self.small, "R  G  B   клик по клетке канала", T.MUTED, 560, TOP + 168)
+        self._label(self.small, tr("gfx-rgb"), T.MUTED, 560, TOP + 168)
         self._draw_channels(560, TOP + 192)
         idx = self.gfx_color
         rgb = self.cart.palette[idx] if idx < len(self.cart.palette) else (0, 0, 0)
-        self._label(self.font, f"слот {idx}   {rgb[0]:02d} {rgb[1]:02d} {rgb[2]:02d}", T.PAPER, 560, TOP + 300)
-        self._label(self.small, "0 прозрачен на спрайте", T.MUTED, 560, TOP + 330)
-        self._label(self.small, "ПКМ — пипетка", T.MUTED, 560, TOP + 350)
+        self._label(
+            self.font,
+            tr("gfx-slot", idx=idx, r=rgb[0], g=rgb[1], b=rgb[2]),
+            T.PAPER,
+            560,
+            TOP + 300,
+        )
+        self._label(self.small, tr("gfx-zero"), T.MUTED, 560, TOP + 330)
+        self._label(self.small, tr("gfx-pick"), T.MUTED, 560, TOP + 350)
+        self._draw_flags()
         while len(self.cart.palette) <= idx:
             self.cart.palette.append((0, 0, 0))
+
+    def _flag_rect(self, bit: int) -> pygame.Rect:
+        return pygame.Rect(560 + bit * 34, TOP + 400, 28, 26)
+
+    def _flag_at(self, pos) -> int | None:
+        for bit in range(8):
+            if self._flag_rect(bit).collidepoint(pos):
+                return bit
+        return None
+
+    def _draw_flags(self) -> None:
+        sid = self.gfx_focus & 255
+        self._label(self.small, tr("gfx-flags", n=sid), T.AMBER, 560, TOP + 376)
+        byte = int(self.cart.flags[sid]) & 255 if sid < len(self.cart.flags) else 0
+        for bit in range(8):
+            rect = self._flag_rect(bit)
+            on = bool(byte & (1 << bit))
+            pygame.draw.rect(self.screen, T.TEAL if on else T.BG2, rect)
+            pygame.draw.rect(self.screen, T.AMBER if on else T.LINE, rect, 1)
+            mark = self.small.render(str(bit), True, T.BG if on else T.INK)
+            self.screen.blit(mark, mark.get_rect(center=rect.center))
+        self._label(self.small, tr("gfx-undo"), T.MUTED, 560, TOP + 434)
 
     def _swatch_rect(self, n: int) -> pygame.Rect:
         col = n % 16
@@ -934,7 +1061,7 @@ class App:
             self.cart.palette = self.cart.palette[:PALETTE_SLOTS]
 
     def _draw_map(self) -> None:
-        self._label(self.small, "КАРТА  128×32 тайлов по 8px.  0 — пусто.", T.AMBER, 16, TOP + 8)
+        self._label(self.small, tr("map-title"), T.AMBER, 16, TOP + 8)
         origin = (16, TOP + 32)
         view_w, view_h = 22, 16
         cell = 24
@@ -957,11 +1084,11 @@ class App:
         panel = pygame.Rect(560, TOP, W - 560, H - TOP - BOT)
         pygame.draw.rect(self.screen, T.BG, panel)
         pygame.draw.line(self.screen, T.LINE, (560, TOP), (560, H - BOT))
-        self._label(self.small, f"выбран тайл {self.map_sprite}", T.PAPER, 580, TOP + 16)
+        self._label(self.small, tr("map-picked", n=self.map_sprite), T.PAPER, 580, TOP + 16)
         self._blit_sprite(self.map_sprite, pygame.Rect(580, TOP + 40, 48, 48))
         start = self.map_page * 64
-        self._label(self.small, f"спрайты {start}–{start + 63}", T.MUTED, 648, TOP + 48)
-        self._label(self.small, ", . страница", T.MUTED, 648, TOP + 68)
+        self._label(self.small, tr("map-range", a=start, b=start + 63), T.MUTED, 648, TOP + 48)
+        self._label(self.small, tr("map-page"), T.MUTED, 648, TOP + 68)
         for i in range(64):
             sid = start + i
             rect = pygame.Rect(580 + (i % 8) * 36, TOP + 100 + (i // 8) * 36, 32, 32)
@@ -1015,12 +1142,12 @@ class App:
         self.screen.blit(pygame.transform.scale(surf, (rect.width, rect.height)), rect.topleft)
 
     def _draw_snd(self) -> None:
-        self._label(self.small, "STRIBOG  8 каналов   пробел — слушать паттерн", T.AMBER, 20, TOP + 10)
+        self._label(self.small, tr("snd-title"), T.AMBER, 20, TOP + 10)
         for i, inst in enumerate(self.cart.instruments):
             y = TOP + 40 + i * 28
             mark = T.AMBER if i == self.snd_ch else T.MUTED
             self._label(self.small, f"CH{i}  {inst.get('wave', 'square'):8}  {int(inst.get('volume', 0)):3d}", mark, 20, y)
-        self._label(self.small, "ПАТТЕРН 32×8    OFF клавишей O    пусто — держать ноту", T.MUTED, 280, TOP + 10)
+        self._label(self.small, tr("snd-pat"), T.MUTED, 280, TOP + 10)
         header = "    " + "".join(f" CH{c} " for c in range(8))
         self._label(self.small, header, T.MUTED, 280, TOP + 36)
         for r in range(32):
@@ -1040,15 +1167,15 @@ class App:
             self._label(self.small, line, color, 280, y)
 
     def _draw_sfx(self) -> None:
-        self._label(self.small, "ЭФФЕКТЫ  sfx(0) … sfx(7)   канал 7   пробел — слушать слот", T.AMBER, 20, TOP + 10)
+        self._label(self.small, tr("sfx-title"), T.AMBER, 20, TOP + 10)
         for i, notes in enumerate(self.cart.sfx[:8]):
             y = TOP + 48 + i * 36
             mark = T.AMBER if i == self.sfx_slot else T.INK
-            preview = " ".join(notes[:8]) if notes else "пусто"
+            preview = " ".join(notes[:8]) if notes else tr("sfx-empty")
             if len(notes) > 8:
                 preview += " …"
             self._label(self.font, f"{i}  {preview}", mark, 24, y)
-        self._label(self.small, f"слот {self.sfx_slot}    окт {self.snd_oct}", T.PAPER, 640, TOP + 48)
+        self._label(self.small, tr("sfx-slot", n=self.sfx_slot, o=self.snd_oct), T.PAPER, 640, TOP + 48)
         notes = self.cart.sfx[self.sfx_slot] if self.cart.sfx else []
         for i in range(min(24, max(len(notes) + 1, 1))):
             y = TOP + 80 + i * 22
@@ -1064,48 +1191,25 @@ class App:
                 continue
             color = T.AMBER if i == self.sfx_i else T.INK
             self._label(self.small, label, color, 640, y)
-        self._label(self.small, "Z–M пишет ноту   O — пауза OFF", T.MUTED, 640, H - BOT - 64)
-        self._label(self.small, "в игре: sfx(номер)", T.MUTED, 640, H - BOT - 44)
+        self._label(self.small, tr("sfx-keys"), T.MUTED, 640, H - BOT - 64)
+        self._label(self.small, tr("sfx-play"), T.MUTED, 640, H - BOT - 44)
 
     def _draw_help(self) -> None:
         panel = pygame.Rect(180, 80, 920, 620)
         pygame.draw.rect(self.screen, (10, 14, 13), panel)
         pygame.draw.rect(self.screen, T.AMBER, panel, 1)
-        lines = [
-            "ARGONAUT LEGACY",
-            "",
-            "Ctrl+R пуск     Esc стоп      Ctrl+S запись     Ctrl+O кассеты",
-            "Ctrl+N новая    Ctrl+P команда (save / load / run / new)    F1 закрыть",
-            "F2 код   F3 спрайты   F4 карта   F5 музыка   F6 эффекты   Ctrl+Q выход",
-            "",
-            "Всё пишется здесь. Отдельного редактора снаружи нет.",
-            "В игре: стрелки или WASD.  Z — кнопка A,  X — кнопка B.",
-            "A влево, D вправо.  Кадр — 333333 такта THOTH, каждый третий 333334.",
-            "",
-            "TPython: отступы, целые 32 бита, списки чисел, def / if / while / for range.",
-            "Нет дробей — только //.  Цвет 0 на спрайте прозрачный.",
-            "Карта: [ ] тайл, запятая и точка — страница спрайтов.",
-            "Музыка: паттерн 32×8. Эффекты: восемь слотов, их вызывает sfx(n).",
-            "cls pset spr rect rectfill text pal btn btnp music sfx print",
-            "map camera frame cycles rnd abs min max len list peek poke",
-            "",
-            "pal(511, ...) отбрасывается. На экране не больше 511 оттенков.",
-            "Одна очистка cls за кадр бесплатна, дальше 76800 пикселей блиттера.",
-            "Звук микширует STRIBOG, такты процессора на это не тратятся.",
-            "",
-            "Кассета — файл .alc в папке carts.",
-        ]
+        lines = help_lines()
         for i, line in enumerate(lines):
             color = T.AMBER if i == 0 else T.INK
-            self._label(self.font if i == 0 else self.small, line, color, panel.x + 28, panel.y + 24 + i * 26)
+            self._label(self.font if i == 0 else self.small, line, color, panel.x + 28, panel.y + 18 + i * 22)
 
     def _draw_files(self) -> None:
         panel = pygame.Rect(360, 140, 560, 480)
         pygame.draw.rect(self.screen, (10, 14, 13), panel)
         pygame.draw.rect(self.screen, T.TEAL, panel, 1)
-        self._label(self.font, "КАССЕТЫ", T.AMBER, panel.x + 24, panel.y + 16)
+        self._label(self.font, tr("carts"), T.AMBER, panel.x + 24, panel.y + 16)
         if not self.files:
-            self._label(self.small, "папка пуста — Ctrl+S сохранит текущую", T.MUTED, panel.x + 24, panel.y + 60)
+            self._label(self.small, tr("carts-empty"), T.MUTED, panel.x + 24, panel.y + 60)
             return
         for i, path in enumerate(self.files[:16]):
             color = T.AMBER if i == self.file_i else T.INK
@@ -1124,7 +1228,10 @@ class App:
         from argonaut.machine.isa import disasm
 
         word = self.machine.mem.read_exec(cpu.pc) or 0
-        lines = [f"PC {cpu.pc:08X}  {disasm(word)}", f"такты {cpu.cycles}  LATE {self.machine.late}  fault {self.machine.mem.fault}"]
+        lines = [
+            f"PC {cpu.pc:08X}  {disasm(word)}",
+            tr("dbg-cycles", n=cpu.cycles, late=self.machine.late, fault=self.machine.mem.fault),
+        ]
         for i in range(15):
             name = "FP" if i == 12 else "SP" if i == 13 else "LR" if i == 14 else f"R{i}"
             lines.append(f"{name:3} {cpu.r[i]:08X}")
@@ -1158,7 +1265,7 @@ class App:
         import traceback
 
         text = traceback.format_exc()
-        last = text.strip().splitlines()[-1] if text.strip() else "сбой"
+        last = text.strip().splitlines()[-1] if text.strip() else tr("crash")
         self.status = last[:90]
         self.error_line = None
         if getattr(sys, "frozen", False):
@@ -1188,6 +1295,17 @@ class App:
 def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
     app = App()
+    carts = [item for item in argv if not item.startswith("-")]
+    if carts and "--selftest" not in argv:
+        path = Path(carts[0])
+        if path.suffix.lower() != ".alc":
+            path = path.with_suffix(".alc")
+        if not path.is_file():
+            alt = cart_dir() / path.name
+            if alt.is_file():
+                path = alt
+        if app.load_path(path):
+            app.run_cart()
     if "--selftest" in argv:
         out = Path("/workspace/screenshots")
         out.mkdir(parents=True, exist_ok=True)

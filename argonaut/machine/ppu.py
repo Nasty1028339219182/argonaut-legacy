@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from argonaut.font8x8 import FONT
 from argonaut.hw import (
+    CMD_CIRC,
+    CMD_CIRCFILL,
+    CMD_CLIP,
     CMD_CLS,
     CMD_FILL,
     CMD_GLYPH,
+    CMD_LINE,
     CMD_MAP,
     CMD_PGET,
     CMD_PSET,
@@ -57,6 +61,10 @@ class PPU:
         self.map_addr = 0
         self.map_w = 128
         self.map_h = 32
+        self.clipx = 0
+        self.clipy = 0
+        self.clipw = SCREEN_W
+        self.cliph = SCREEN_H
         mem.ppu = self
 
     def begin_frame(self) -> None:
@@ -128,6 +136,42 @@ class PPU:
             self.text_num(s32(self.reg[PPU_SRC // 4]), self._s(PPU_X), self._s(PPU_Y), self.reg[PPU_COLOR // 4] & 0x1FF)
         elif cmd == CMD_PGET:
             self.reg[PPU_SRC // 4] = self.pget(self._s(PPU_X), self._s(PPU_Y)) & 0xFFFFFFFF
+        elif cmd == CMD_LINE:
+            self.line(
+                self._s(PPU_X),
+                self._s(PPU_Y),
+                self._s(PPU_W),
+                self._s(PPU_H),
+                self.reg[PPU_COLOR // 4] & 0x1FF,
+            )
+        elif cmd == CMD_CIRC:
+            self.circ(self._s(PPU_X), self._s(PPU_Y), self._s(PPU_W), self.reg[PPU_COLOR // 4] & 0x1FF)
+        elif cmd == CMD_CIRCFILL:
+            self.circfill(self._s(PPU_X), self._s(PPU_Y), self._s(PPU_W), self.reg[PPU_COLOR // 4] & 0x1FF)
+        elif cmd == CMD_CLIP:
+            self.set_clip(self._s(PPU_X), self._s(PPU_Y), self._s(PPU_W), self._s(PPU_H))
+
+    def _pay(self, n: int) -> None:
+        cpu = self.mem.cpu
+        if cpu is not None and n > 0:
+            cpu.cycles += n
+
+    def _inside(self, x: int, y: int) -> bool:
+        return (
+            self.clipx <= x < self.clipx + self.clipw
+            and self.clipy <= y < self.clipy + self.cliph
+            and 0 <= x < SCREEN_W
+            and 0 <= y < SCREEN_H
+        )
+
+    def set_clip(self, x: int, y: int, w: int, h: int) -> None:
+        if w < 0:
+            x += w
+            w = -w
+        if h < 0:
+            y += h
+            h = -h
+        self.clipx, self.clipy, self.clipw, self.cliph = x, y, w, h
 
     def cls(self, color: int) -> None:
         if color > 510:
@@ -147,11 +191,13 @@ class PPU:
             fb[i] = lo
             fb[i + 1] = hi
 
-    def pset(self, x: int, y: int, color: int, camera: bool = False) -> None:
+    def pset(self, x: int, y: int, color: int, camera: bool = False, pay: bool = True) -> None:
         if camera:
             x += self._s(PPU_CAMX)
             y += self._s(PPU_CAMY)
-        if not (0 <= x < SCREEN_W and 0 <= y < SCREEN_H):
+        if pay:
+            self._pay(1)
+        if not self._inside(x, y):
             return
         self.mem.set_fb_index(y * SCREEN_W + x, color, count=True)
 
@@ -172,10 +218,12 @@ class PPU:
         if h < 0:
             y += h
             h = -h
-        x0 = max(0, x)
-        y0 = max(0, y)
-        x1 = min(SCREEN_W, x + w)
-        y1 = min(SCREEN_H, y + h)
+        x0 = max(x, self.clipx, 0)
+        y0 = max(y, self.clipy, 0)
+        x1 = min(SCREEN_W, self.clipx + self.clipw, x + w)
+        y1 = min(SCREEN_H, self.clipy + self.cliph, y + h)
+        if x1 > x0 and y1 > y0:
+            self._pay((x1 - x0) * (y1 - y0))
         for yy in range(y0, y1):
             row = yy * SCREEN_W
             for xx in range(x0, x1):
@@ -224,9 +272,10 @@ class PPU:
                 for py in range(8):
                     for px in range(8):
                         color = self._gfx_at(sx0 + px, sy0 + py)
+                        self._pay(1)
                         if color == 0:
                             continue
-                        self.pset(x + tx * 8 + px, y + ty * 8 + py, color, camera=False)
+                        self.pset(x + tx * 8 + px, y + ty * 8 + py, color, camera=False, pay=False)
 
     def map_blit(self, tx: int, ty: int, dx: int, dy: int, tw: int, th: int) -> None:
         dx += self._s(PPU_CAMX)
@@ -255,18 +304,82 @@ class PPU:
                 for py in range(8):
                     for px in range(8):
                         color = self._gfx_at(sx0 + px, sy0 + py)
+                        self._pay(1)
                         if color == 0:
                             continue
-                        self.pset(ox + px, oy + py, color, camera=False)
+                        self.pset(ox + px, oy + py, color, camera=False, pay=False)
 
     def glyph(self, ch: int, x: int, y: int, color: int) -> None:
         ch &= 127
         bits = FONT[ch * 8 : ch * 8 + 8]
+        self._pay(64)
         for row in range(8):
             line = bits[row]
             for col in range(8):
                 if line & (0x80 >> col):
-                    self.pset(x + col, y + row, color, camera=False)
+                    self.pset(x + col, y + row, color, camera=False, pay=False)
+
+    def line(self, x0: int, y0: int, x1: int, y1: int, color: int) -> None:
+        x0 += self._s(PPU_CAMX)
+        y0 += self._s(PPU_CAMY)
+        x1 += self._s(PPU_CAMX)
+        y1 += self._s(PPU_CAMY)
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        guard = dx + dy + 1
+        while guard > 0:
+            guard -= 1
+            self.pset(x0, y0, color, camera=False)
+            if x0 == x1 and y0 == y1:
+                return
+            e2 = err * 2
+            if e2 > -dy:
+                err -= dy
+                x0 += sx
+            if e2 < dx:
+                err += dx
+                y0 += sy
+
+    def circ(self, cx: int, cy: int, r: int, color: int) -> None:
+        cx += self._s(PPU_CAMX)
+        cy += self._s(PPU_CAMY)
+        if r < 0:
+            return
+        x = r
+        y = 0
+        d = 1 - r
+        while x >= y:
+            for px, py in (
+                (x, y),
+                (y, x),
+                (-x, y),
+                (-y, x),
+                (x, -y),
+                (y, -x),
+                (-x, -y),
+                (-y, -x),
+            ):
+                self.pset(cx + px, cy + py, color, camera=False)
+            y += 1
+            if d < 0:
+                d += 2 * y + 1
+            else:
+                x -= 1
+                d += 2 * (y - x) + 1
+
+    def circfill(self, cx: int, cy: int, r: int, color: int) -> None:
+        cx += self._s(PPU_CAMX)
+        cy += self._s(PPU_CAMY)
+        if r < 0:
+            return
+        for dy in range(-r, r + 1):
+            span = 0
+            while (span + 1) * (span + 1) + dy * dy <= r * r:
+                span += 1
+            self.fill(cx - span, cy + dy, span * 2 + 1, 1, color, camera=False)
 
     def text_ptr(self, ptr: int, x: int, y: int, color: int) -> None:
         x += self._s(PPU_CAMX)

@@ -30,6 +30,7 @@ class Cart:
     pattern: list = field(default_factory=list)
     sfx: list = field(default_factory=list)
     bpm: int = 112
+    flags: list = field(default_factory=lambda: [0] * 256)
 
     def to_json(self) -> str:
         payload = {
@@ -47,6 +48,7 @@ class Cart:
             "pattern": self.pattern,
             "sfx": self.sfx,
             "bpm": self.bpm,
+            "flags": [int(v) & 255 for v in self.flags[:256]],
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -54,7 +56,7 @@ class Cart:
     def from_json(cls, text: str) -> "Cart":
         raw = json.loads(text)
         if raw.get("magic") != "ALCART1":
-            raise ValueError("это не картридж Argonaut Legacy")
+            raise ValueError("not an Argonaut Legacy cartridge")
         gfx = raw["gfx"]
         mp = raw["map"]
         cells_b = _unb64(mp["data"])
@@ -73,7 +75,10 @@ class Cart:
             pattern=raw.get("pattern") or [],
             sfx=raw.get("sfx") or [],
             bpm=int(raw.get("bpm") or 112),
+            flags=[int(v) & 255 for v in (raw.get("flags") or [])][:256],
         )
+        while len(cart.flags) < 256:
+            cart.flags.append(0)
         return cart
 
 

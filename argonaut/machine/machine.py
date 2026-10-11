@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from argonaut.asm.assembler import assemble
 from argonaut.hw import (
+    FLAG_BASE,
+    FLAG_BYTES,
     PALETTE_SLOTS,
     ROM_BASE,
     STR_MAGIC,
@@ -63,12 +65,21 @@ class Machine:
         self.ppu.map_w = cart.map_w
         self.ppu.map_h = cart.map_h
         self.ppu.begin_frame()
+        self.ppu.clipx = 0
+        self.ppu.clipy = 0
+        self.ppu.clipw = 320
+        self.ppu.cliph = 240
+        flags = list(getattr(cart, "flags", []) or [])
+        flags = (flags + [0] * FLAG_BYTES)[:FLAG_BYTES]
+        for index, value in enumerate(flags):
+            self.mem.sram[FLAG_BASE + index] = int(value) & 0xFF
         self.apu.load_waves(self.mem.sram, cart.instruments)
         self.apu.pattern = cart.pattern
         self.apu.bpm = cart.bpm
         self.apu.sfx_bank = cart.sfx
         self.apu.playing = False
         self.apu.sfx_notes = []
+        self.apu.spent = 0
         for ch in self.apu.channels:
             ch.on = False
         self.cpu.reset(prog.symbols["_start"])
@@ -98,12 +109,16 @@ class Machine:
         self.cpu.asleep = False
         if not self.cpu.halted:
             self.cpu.run(budget)
+        self._after_cpu()
+        self.cpu.cycles += self.apu.take_spent()
         self.overrun = max(0, self.cpu.cycles - budget)
         finished = self.cpu.asleep or self.cpu.halted
         self.late = 0 if finished and self.overrun == 0 else 1
         self.mem.late = self.late
         self.frame_index += 1
-        self._after_cpu()
+
+    def pull_flags(self) -> list[int]:
+        return [self.mem.sram[FLAG_BASE + i] for i in range(FLAG_BYTES)]
 
     def _after_cpu(self) -> None:
         for kind, value in self.mem.apu_events:

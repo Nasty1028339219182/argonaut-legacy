@@ -27,6 +27,8 @@ from argonaut.hw import (
     SYS_LATE,
     SYS_LOG,
     SYS_PALCLIP,
+    WAIT_MMIO,
+    WAIT_ROM,
 )
 
 
@@ -67,6 +69,15 @@ class Memory:
     def _fault(self, code: int) -> None:
         if self.fault == 0:
             self.fault = code
+
+    def wait(self, addr: int) -> int:
+        """Extra cycles beyond the instruction's posted SRAM cost."""
+        addr &= 0xFFFFFFFF
+        if addr < SRAM_SIZE or AUDIO_BASE <= addr < AUDIO_BASE + AUDIO_SIZE:
+            return 0
+        if ROM_BASE <= addr < ROM_BASE + ROM_SIZE:
+            return WAIT_ROM
+        return WAIT_MMIO
 
     def read8(self, addr: int) -> int:
         addr &= 0xFFFFFFFF
@@ -251,7 +262,7 @@ class Memory:
     def load_rom_image(self, data: bytes, offset: int = 0) -> None:
         end = offset + len(data)
         if end > ROM_SIZE:
-            raise ValueError("картридж больше 8 МБ")
+            raise ValueError("cartridge image is larger than 8 MB")
         self.rom[offset:end] = data
         self.rom_used = max(self.rom_used, end)
 

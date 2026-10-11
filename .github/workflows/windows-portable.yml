@@ -47,7 +47,7 @@ jobs:
           Copy-Item LICENSE dist\ArgonautLegacy\
           Copy-Item argonaut\fonts\LICENSE-dejavu.txt dist\ArgonautLegacy\
           $ver = "${{ github.ref_name }}".TrimStart("v")
-          if (-not $ver) { $ver = "0.1.1" }
+          if (-not $ver) { $ver = "1.0.0" }
           Compress-Archive -Path dist\ArgonautLegacy -DestinationPath "ArgonautLegacy-$ver-windows.zip" -Force
           Copy-Item dist-onefile\ArgonautLegacy.exe "ArgonautLegacy-$ver-portable.exe"
 
@@ -62,14 +62,53 @@ jobs:
             exit 0
           fi
           cat > notes.md <<'EOF'
-          Portable-сборка для Windows. Python ставить не нужно.
+          # Argonaut Legacy
 
-          - Файл `*-portable.exe` — одна программа. Кладёте куда угодно и запускаете. Кассеты появятся в папке `carts` рядом с файлом.
-          - Zip — та же консоль папкой, если антивирус ругается на один файл. Распакуйте и запустите `ArgonautLegacy.exe`.
+          Desktop fantasy console. Games are TPython. The code, sprite, map, music, and effect editors live in the same window. There is no browser build.
+
+          English and Russian: press F7 in the editor, or click EN / RU. Docs in the repository are written in both languages. This note is for anyone downloading the console, not a private changelog.
+
+          ## Windows, no Python install
+
+          - `*-portable.exe` is one program. Put it anywhere and run it. Cartridges appear in a `carts` folder next to the file. `ArgonautLegacy.exe cart.alc` starts that cart immediately. Esc returns to the editor.
+          - The zip is the same console as a folder, if an antivirus dislikes a single file. Unzip it and run `ArgonautLegacy.exe`.
+
+          There is no installer. Copy the file or the folder to another computer and the console is still there.
+
+          Ctrl+R runs the cart. Esc stops. F1 is help. F3 sprites: keys 1–8 are the eight sprite flags, Ctrl+Z undoes.
+
+          ## What 1.0.0 counts
+
+          THOTH is 20 MHz, no pipeline and no scanline beam. The first `cls` of a frame is free. After that every pixel the blitter inspects costs one cycle, including a transparent sprite pixel. SRAM waits 0, ROM data waits +1, the framebuffer, palette, and ports wait +2. A pattern row costs 48 cycles and a note-on costs 8. The sample mixer stays on the host.
+
+          New TPython calls: `line`, `circ`, `circfill`, `clip`, `fget`, `fset`. Still no floats, dicts, or classes.
+
+          The console is MIT. Games you make with it are not covered by that license.
+
+          ---
+
+          # Argonaut Legacy
+
+          Настольная фантазийная консоль. Игры на TPython. Редакторы кода, спрайтов, карты, музыки и эффектов живут в том же окне. Браузерной сборки нет.
+
+          Английский и русский: в редакторе F7 или метка EN / RU. Документы в репозитории написаны на обоих языках. Эта заметка для всех, кто скачивает консоль, а не личный список правок.
+
+          ## Windows без установки Python
+
+          - `*-portable.exe` — одна программа. Кладёте куда угодно и запускаете. Кассеты появятся в папке `carts` рядом с файлом. `ArgonautLegacy.exe cart.alc` сразу запускает эту кассету. Esc возвращает в редактор.
+          - Zip — та же консоль папкой, если антивирус не любит один файл. Распакуйте и запустите `ArgonautLegacy.exe`.
 
           Установщика нет. Скопировали файл или папку на другой компьютер — консоль на месте.
 
-          Ctrl+R пускает кассету. Esc возвращает в редакторы. F1 — справка.
+          Ctrl+R пускает кассету. Esc останавливает. F1 — справка. В спрайтах (F3) клавиши 1–8 — восемь флагов, Ctrl+Z отменяет штрих.
+
+          ## Что считает 1.0.0
+
+          THOTH — 20 МГц, без конвейера и без луча развёртки. Первый `cls` кадра бесплатный. Дальше каждый осмотренный пиксель блиттера стоит один такт, включая прозрачный пиксель спрайта. SRAM без ожидания, данные ROM +1, экран, палитра и порты +2. Строка паттерна — 48 тактов, взятие ноты — 8. Сэмпловый микшер остаётся на стороне хоста.
+
+          Новые вызовы TPython: `line`, `circ`, `circfill`, `clip`, `fget`, `fset`. Дробей, словарей и классов по-прежнему нет.
+
+          Консоль под лицензией MIT. Игры, которые вы на ней сделаете, этой лицензией не покрыты.
           EOF
           sed -i 's/^          //' notes.md
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then

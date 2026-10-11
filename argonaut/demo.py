@@ -68,8 +68,8 @@ REED = [
     ".ccccc..",
 ]
 
-CODE = """# Паром Тота. Стрелки или WASD — ход, Esc — назад в редактор.
-# Цвет 0 на спрайте прозрачный. pal(511, ...) железо отбросит.
+CODE = """# Ferry of Thoth / Паром Тота. Arrows or WASD. Esc returns to the editor.
+# Color 0 on a sprite is transparent. pal(511, ...) is rejected by the hardware.
 
 px = 148
 py = 118
@@ -80,7 +80,7 @@ alive = 0
 
 def _init():
     global gx, gy, alive
-    # Палитра кассеты уже залита в AMATERASU. Это — живая запись слота.
+    # Slot 6 is rewritten live. / Слот 6 переписывается на ходу.
     pal(6, 31, 22, 8)
     gx = [36, 96, 160, 220, 280]
     gy = [48, 96, 64, 140, 168]

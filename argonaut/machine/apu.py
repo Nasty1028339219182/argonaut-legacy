@@ -10,7 +10,7 @@ import math
 from array import array
 from dataclasses import dataclass, field
 
-from argonaut.hw import AUDIO_BASE, s32
+from argonaut.hw import APU_NOTE_CYCLES, APU_ROW_CYCLES, AUDIO_BASE, s32
 
 SAMPLE_RATE = 22050
 WAVE_LEN = 256
@@ -107,6 +107,7 @@ class APU:
     sfx_notes: list[str] = field(default_factory=list)
     sfx_pos: int = 0
     sfx_bank: list[list[str]] = field(default_factory=list)
+    spent: int = 0
 
     def silence(self) -> None:
         for ch in self.channels:
@@ -122,6 +123,11 @@ class APU:
             sram[base : base + WAVE_LEN] = wave
             self.channels[i].base = base
             self.channels[i].noise = inst.get("wave") == "noise"
+
+    def take_spent(self) -> int:
+        cost = self.spent
+        self.spent = 0
+        return cost
 
     def note_on(self, channel: int, freq: float, volume: int, noise: bool, base: int) -> None:
         if not 0 <= channel < 8:
@@ -164,11 +170,13 @@ class APU:
     def _apply_row(self) -> None:
         if not self.pattern:
             return
+        self.spent += APU_ROW_CYCLES
         row = self.pattern[self.row % len(self.pattern)]
         for ch in range(min(7, len(row))):
             freq = parse_note(row[ch])
             if freq is None:
                 continue
+            self.spent += APU_NOTE_CYCLES
             noise, base, vol = self._inst(ch)
             self.note_on(ch, freq, vol, noise, base)
 
@@ -178,6 +186,7 @@ class APU:
             self.sfx_notes = []
             return
         freq = parse_note(self.sfx_notes[self.sfx_pos])
+        self.spent += APU_NOTE_CYCLES
         noise, base, vol = self._inst(7)
         if freq is None:
             freq = 880.0

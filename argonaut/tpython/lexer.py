@@ -74,7 +74,7 @@ def lex(source: str) -> list[Tok]:
             continue
         indent = len(code) - len(code.lstrip(" "))
         if code[:indent].strip(" ") != "":
-            raise TPyError("отступ только пробелами", lineno)
+            raise TPyError("indent-spaces", lineno)
         if indent > indents[-1]:
             indents.append(indent)
             tokens.append(Tok("INDENT", lineno))
@@ -83,7 +83,7 @@ def lex(source: str) -> list[Tok]:
                 indents.pop()
                 tokens.append(Tok("DEDENT", lineno))
             if indent != indents[-1]:
-                raise TPyError("сбитый отступ", lineno)
+                raise TPyError("bad-indent", lineno)
         _lex_line(code[indent:], lineno, tokens)
         tokens.append(Tok("NEWLINE", lineno))
     while len(indents) > 1:
@@ -111,7 +111,7 @@ def _lex_line(text: str, line: int, out: list[Tok]) -> None:
             i += 1
             continue
         if ch == "/" and (i + 1 >= n or text[i + 1] != "/"):
-            raise TPyError("в TPython нет дробей: используйте //", line)
+            raise TPyError("no-float-div", line)
         if i + 1 < n and text[i : i + 2] in two:
             kind = two[text[i : i + 2]]
             out.append(Tok(kind, line, text[i : i + 2]))
@@ -123,7 +123,7 @@ def _lex_line(text: str, line: int, out: list[Tok]) -> None:
                 while j < n and text[j] in "0123456789abcdefABCDEF":
                     j += 1
                 if j == i + 2:
-                    raise TPyError("пустое шестнадцатеричное число", line)
+                    raise TPyError("empty-hex", line)
                 out.append(Tok("NUMBER", line, text[i:j], int(text[i:j], 16)))
                 i = j
                 continue
@@ -131,7 +131,7 @@ def _lex_line(text: str, line: int, out: list[Tok]) -> None:
             while j < n and text[j].isdigit():
                 j += 1
             if j < n and text[j] == ".":
-                raise TPyError("в TPython нет дробей: используйте целые", line)
+                raise TPyError("no-float", line)
             out.append(Tok("NUMBER", line, text[i:j], int(text[i:j], 10)))
             i = j
             continue
@@ -154,7 +154,7 @@ def _lex_line(text: str, line: int, out: list[Tok]) -> None:
                     esc = text[j + 1]
                     mapping = {"n": "\n", "t": "\t", "\\": "\\", "'": "'", '"': '"', "0": "\0", "r": "\r"}
                     if esc not in mapping:
-                        raise TPyError(f"неизвестное \\{esc}", line)
+                        raise TPyError("bad-escape", line, esc=esc)
                     buf.append(mapping[esc])
                     j += 2
                     continue
@@ -163,7 +163,7 @@ def _lex_line(text: str, line: int, out: list[Tok]) -> None:
                 buf.append(text[j])
                 j += 1
             else:
-                raise TPyError("строка не закрыта", line)
+                raise TPyError("unclosed-string", line)
             out.append(Tok("STRING", line, "".join(buf), "".join(buf)))
             i = j + 1
             continue
@@ -190,4 +190,4 @@ def _lex_line(text: str, line: int, out: list[Tok]) -> None:
             out.append(Tok(singles[ch], line, ch))
             i += 1
             continue
-        raise TPyError(f"непонятный символ {ch!r}", line)
+        raise TPyError("bad-char", line, ch=repr(ch))

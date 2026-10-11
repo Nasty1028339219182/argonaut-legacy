@@ -96,9 +96,11 @@ BCC = {
 
 
 class AsmError(Exception):
-    def __init__(self, message: str, line: int | None = None) -> None:
+    def __init__(self, message: str, line: int | None = None, **fmt) -> None:
         self.line = line
-        super().__init__(message if line is None else f"строка {line}: {message}")
+        self.key = message
+        self.fmt = fmt
+        super().__init__(message)
 
 
 @dataclass
@@ -159,7 +161,7 @@ class _Align(_Item):
 
     def encode(self, pc: int, labels: dict[str, int]) -> list[int]:
         if self.pad % 4:
-            raise AsmError("выравнивание не кратно слову")
+            raise AsmError("align-not-word")
         return [enc_op(OP_NOP)] * (self.pad // 4) if False else []
 
 
@@ -178,7 +180,7 @@ class _LI(_Item):
     def encode(self, pc: int, labels: dict[str, int]) -> list[int]:
         if isinstance(self.value, str):
             if self.value not in labels:
-                raise AsmError(f"нет метки {self.value}")
+                raise AsmError("no-label", name=self.value)
             val = labels[self.value]
             force_two = True
         else:
@@ -205,14 +207,14 @@ class _Branch(_Item):
 
     def encode(self, pc: int, labels: dict[str, int]) -> list[int]:
         if self.label not in labels:
-            raise AsmError(f"нет метки {self.label}")
+            raise AsmError("no-label", name=self.label)
         off = (labels[self.label] - (pc + 4)) // 4
         if self.cond == "BL":
             if not -(1 << 25) <= off < (1 << 25):
-                raise AsmError(f"BL слишком далеко: {self.label}")
+                raise AsmError("bl-far", name=self.label)
             return [enc_bl(off)]
         if not -(1 << 21) <= off < (1 << 21):
-            raise AsmError(f"ветвление слишком далеко: {self.label}")
+            raise AsmError("branch-far", name=self.label)
         return [enc_bcc(COND[self.cond], off)]
 
 
@@ -264,7 +266,7 @@ def _parse_int(text: str) -> int:
 def _reg(token: str, line: int) -> int:
     name = token.strip().upper()
     if name not in REGS:
-        raise AsmError(f"не регистр: {token}", line)
+        raise AsmError("not-reg", line, token=token)
     return REGS[name]
 
 
@@ -313,7 +315,7 @@ def _unescape(text: str) -> bytes:
             n = text[i + 1]
             mapping = {"n": 10, "t": 9, "0": 0, "\\": 92, "'": 39, '"': 34, "r": 13}
             if n not in mapping:
-                raise AsmError(f"неизвестное экранирование \\{n}")
+                raise AsmError("asm-escape", esc=n)
             out.append(mapping[n])
             i += 2
             continue
@@ -338,7 +340,7 @@ def assemble(source: str, origin: int = ROM_BASE) -> Program:
             else:
                 bits = body.split()
                 if len(bits) != 2:
-                    raise AsmError("ожидалось .equ ИМЯ ЗНАЧЕНИЕ", n)
+                    raise AsmError("equ-syntax", n)
                 name, val = bits
             equ[name] = _parse_int(val)
             continue
@@ -357,7 +359,7 @@ def assemble(source: str, origin: int = ROM_BASE) -> Program:
     def bind_labels(addr: int) -> None:
         for line_no, name in pending_labels:
             if name in symbols_build or name in equ:
-                raise AsmError(f"повтор метки {name}", line_no)
+                raise AsmError("dup-label", line_no, name=name)
             symbols_build[name] = addr
         pending_labels.clear()
 
@@ -365,7 +367,7 @@ def assemble(source: str, origin: int = ROM_BASE) -> Program:
         if text.endswith(":") and " " not in text:
             name = text[:-1].strip()
             if not name:
-                raise AsmError("пустая метка", line_no)
+                raise AsmError("empty-label", line_no)
             pending_labels.append((line_no, name))
             continue
         # label and instruction on one line: `name: ADD ...` not required
@@ -374,7 +376,7 @@ def assemble(source: str, origin: int = ROM_BASE) -> Program:
             item, size = _parse_item(text, line_no, equ, pc)
         except AsmError as exc:
             if exc.line is None:
-                raise AsmError(str(exc), line_no) from exc
+                exc.line = line_no
             raise
         if isinstance(item, _Align):
             pad = (item.bound - (pc % item.bound)) % item.bound
@@ -395,7 +397,7 @@ def assemble(source: str, origin: int = ROM_BASE) -> Program:
         if not byte_buf:
             return
         if len(byte_buf) % 4 != 0:
-            raise AsmError("данные не выровнены на слово — поставьте .align 4")
+            raise AsmError("data-align")
         for i in range(0, len(byte_buf), 4):
             words.append(int.from_bytes(byte_buf[i : i + 4], "little"))
             source_map.append(0)
@@ -422,16 +424,18 @@ def assemble(source: str, origin: int = ROM_BASE) -> Program:
         try:
             encoded = item.encode(cursor, symbols_build)
         except AsmError as exc:
-            raise AsmError(str(exc), line_no) from exc
+            if exc.line is None:
+                exc.line = line_no
+            raise
         if sum(4 for _ in encoded) != item.size():
-            raise AsmError("размер команды разъехался с кодированием", line_no)
+            raise AsmError("size-mismatch", line_no)
         for word in encoded:
             words.append(word & 0xFFFFFFFF)
             source_map.append(line_no)
         cursor += item.size()
     flush_bytes()
     if len(byte_buf):
-        raise AsmError("хвост данных не выровнен")
+        raise AsmError("tail-align")
     return Program(origin, words, symbols_build, source_map)
 
 
@@ -444,7 +448,7 @@ def _value(token: str, equ: dict[str, int], line: int) -> int | str:
     try:
         return _parse_int(token)
     except ValueError as exc:
-        raise AsmError(f"не число и не метка: {token}", line) from exc
+        raise AsmError("not-number", line, token=token) from exc
 
 
 def _parse_item(text: str, line: int, equ: dict[str, int], pc: int):
@@ -453,11 +457,11 @@ def _parse_item(text: str, line: int, equ: dict[str, int], pc: int):
         head = head.lower()
         rest = rest.strip()
         if head == "org":
-            raise AsmError(".org внутри программы не поддерживается", line)
+            raise AsmError("org-unsupported", line)
         if head == "align":
             bound = _parse_int(rest or "4")
             if bound <= 0 or bound & (bound - 1):
-                raise AsmError(".align ждёт степень двойки", line)
+                raise AsmError("align-pow2", line)
             return _Align(bound), 0
         if head == "dw":
             vals = _split_ops(rest)
@@ -465,7 +469,7 @@ def _parse_item(text: str, line: int, equ: dict[str, int], pc: int):
             for v in vals:
                 num = _value(v, equ, line)
                 if not isinstance(num, int):
-                    raise AsmError(".dw пока только для чисел", line)
+                    raise AsmError("dw-number", line)
                 data += (num & 0xFFFFFFFF).to_bytes(4, "little")
             return _Bytes(bytes(data)), len(data)
         if head == "db":
@@ -477,17 +481,17 @@ def _parse_item(text: str, line: int, equ: dict[str, int], pc: int):
                 else:
                     num = _value(v, equ, line)
                     if not isinstance(num, int):
-                        raise AsmError(".db ждёт байт", line)
+                        raise AsmError("db-byte", line)
                     data.append(num & 0xFF)
             return _Bytes(bytes(data)), len(data)
         if head in ("ascii", "asciiz"):
             if not rest or rest[0] not in ("'", '"'):
-                raise AsmError("ожидалась строка", line)
+                raise AsmError("expected-string", line)
             raw = _unescape(rest[1:-1])
             if head == "asciiz":
                 raw += b"\x00"
             return _Bytes(raw), len(raw)
-        raise AsmError(f"неизвестная директива .{head}", line)
+        raise AsmError("unknown-directive", line, name=head)
 
     parts = text.replace(",", " ").split()
     # restore because we need commas for reg lists... do a better split
@@ -507,7 +511,7 @@ def _parse_item(text: str, line: int, equ: dict[str, int], pc: int):
 
     if mnemonic == "LI":
         if len(ops) != 2:
-            raise AsmError("LI rd, значение", line)
+            raise AsmError("li-syntax", line)
         rd = _reg(ops[0], line)
         val = _value(ops[1], equ, line)
         item = _LI(rd, val)
@@ -515,7 +519,7 @@ def _parse_item(text: str, line: int, equ: dict[str, int], pc: int):
 
     if mnemonic in ("PUSH", "POP"):
         if len(ops) != 1:
-            raise AsmError(f"{mnemonic} rd", line)
+            raise AsmError("rd-syntax", line, op=mnemonic)
         rd = _reg(ops[0], line)
         if mnemonic == "PUSH":
             # ADDI SP, SP, -4 ; STR rd, SP, 0
@@ -530,14 +534,14 @@ def _parse_item(text: str, line: int, equ: dict[str, int], pc: int):
 
     if mnemonic == "NEG":
         if len(ops) != 2:
-            raise AsmError("NEG rd, rs", line)
+            raise AsmError("neg-syntax", line)
         rd = _reg(ops[0], line)
         rs = _reg(ops[1], line)
         return _Word(enc_alu(F_SUB, rd, 0, rs)), 4
 
     if mnemonic in ALU3:
         if len(ops) != 3:
-            raise AsmError(f"{mnemonic} rd, rs, rt", line)
+            raise AsmError("alu-syntax", line, op=mnemonic)
         rd, rs, rt = _reg(ops[0], line), _reg(ops[1], line), _reg(ops[2], line)
         return _Word(enc_alu(ALU3[mnemonic], rd, rs, rt)), 4
 
@@ -554,43 +558,43 @@ def _parse_item(text: str, line: int, equ: dict[str, int], pc: int):
 
     if mnemonic in IMM or mnemonic in SHIFTS:
         if len(ops) != 3:
-            raise AsmError(f"{mnemonic} rd, rs, imm", line)
+            raise AsmError("imm-syntax", line, op=mnemonic)
         rd = _reg(ops[0], line)
         # allow LDR R1, [R2, -4]
         second = ops[1].strip()
         third = ops[2].strip()
         if second.startswith("["):
-            raise AsmError("используйте LDR rd, rs, смещение", line)
+            raise AsmError("ldr-form", line)
         rs = _reg(second, line)
         imm_v = _value(third, equ, line)
         if not isinstance(imm_v, int):
-            raise AsmError("смещение должно быть числом", line)
+            raise AsmError("imm-number", line)
         if mnemonic in SHIFTS:
             if not 0 <= imm_v <= 31:
-                raise AsmError("сдвиг 0..31", line)
+                raise AsmError("shift-range", line)
             return _Word(enc_shift_imm(SHIFTS[mnemonic], rd, rs, imm_v)), 4
         if mnemonic in ("ANDI", "ORI", "XORI"):
             if not 0 <= imm_v <= 0xFFFF:
-                raise AsmError("непосредственное 0..65535", line)
+                raise AsmError("imm-range", line)
             return _Word(enc_imm(IMM[mnemonic], rd, rs, imm_v)), 4
         if not -32768 <= imm_v <= 32767:
-            raise AsmError("смещение не влезает в 16 бит", line)
+            raise AsmError("off16", line)
         return _Word(enc_imm(IMM[mnemonic], rd, rs, imm_v & 0xFFFF)), 4
 
     if mnemonic == "LUI":
         if len(ops) != 2:
-            raise AsmError("LUI rd, imm", line)
+            raise AsmError("lui-syntax", line)
         rd = _reg(ops[0], line)
         imm_v = _value(ops[1], equ, line)
         if not isinstance(imm_v, int) or not 0 <= (imm_v & 0xFFFF) <= 0xFFFF:
-            raise AsmError("LUI ждёт 16-битное число", line)
+            raise AsmError("lui-number", line)
         if imm_v < 0 or imm_v > 0xFFFF:
-            raise AsmError("LUI ждёт 0..65535", line)
+            raise AsmError("lui-range", line)
         return _Word(enc_lui(rd, imm_v)), 4
 
     if mnemonic in BCC or mnemonic == "BL":
         if len(ops) != 1:
-            raise AsmError(f"{mnemonic} метка", line)
+            raise AsmError("branch-label", line, op=mnemonic)
         label = ops[0]
         if mnemonic == "BL":
             return _Branch("BL", label), 4
@@ -598,16 +602,16 @@ def _parse_item(text: str, line: int, equ: dict[str, int], pc: int):
 
     if mnemonic == "JR":
         if len(ops) != 1:
-            raise AsmError("JR rs", line)
+            raise AsmError("jr-syntax", line)
         return _Word(enc_jr(0, _reg(ops[0], line), 0)), 4
     if mnemonic == "JALR":
         if len(ops) != 2:
-            raise AsmError("JALR rd, rs", line)
+            raise AsmError("jalr-syntax", line)
         return _Word(enc_jr(_reg(ops[0], line), _reg(ops[1], line), 1)), 4
 
     if mnemonic in ("LDM", "STM"):
         if len(ops) != 2:
-            raise AsmError(f"{mnemonic} rs!, {{regs}}", line)
+            raise AsmError("ldm-syntax", line, op=mnemonic)
         base_tok = ops[0]
         wb = base_tok.endswith("!")
         if wb:
@@ -615,7 +619,7 @@ def _parse_item(text: str, line: int, equ: dict[str, int], pc: int):
         base = _reg(base_tok, line)
         group = ops[1].strip()
         if not (group.startswith("{") and group.endswith("}")):
-            raise AsmError("список регистров в фигурных скобках", line)
+            raise AsmError("reglist", line)
         mask = 0
         for name in group[1:-1].split(","):
             name = name.strip()
@@ -625,7 +629,7 @@ def _parse_item(text: str, line: int, equ: dict[str, int], pc: int):
         op = 0x10 if mnemonic == "LDM" else 0x11
         return _Word(enc_ldm(op, base, 1 if wb else 0, mask)), 4
 
-    raise AsmError(f"неизвестная команда {mnemonic}", line)
+    raise AsmError("unknown-op", line, op=mnemonic)
 
 
 class _Pair(_Item):

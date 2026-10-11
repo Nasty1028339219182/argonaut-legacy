@@ -61,6 +61,12 @@ SIGS = {
     "max": (2, 2, []),
     "len": (1, 1, []),
     "list": (1, 1, []),
+    "line": (5, 5, []),
+    "circ": (4, 4, []),
+    "circfill": (4, 4, []),
+    "clip": (0, 4, [0, 0, 320, 240]),
+    "fget": (1, 2, [-1]),
+    "fset": (3, 3, []),
 }
 
 BUILTIN_FN = {
@@ -90,6 +96,12 @@ BUILTIN_FN = {
     "max": "fn_max",
     "len": "fn_len",
     "list": "fn_list_new",
+    "line": "fn_line",
+    "circ": "fn_circ",
+    "circfill": "fn_circfill",
+    "clip": "fn_clip",
+    "fget": "fn_fget",
+    "fset": "fn_fset",
 }
 
 
@@ -122,7 +134,7 @@ class Compiler:
         for stmt in program.stmts:
             if isinstance(stmt, Func):
                 if stmt.name in self.funcs:
-                    raise TPyError(f"функция {stmt.name} уже есть", stmt.line)
+                    raise TPyError("dup-func", stmt.line, name=stmt.name)
                 self.funcs[stmt.name] = stmt
                 funcs.append(stmt)
             else:
@@ -246,7 +258,7 @@ class Compiler:
                 elif isinstance(stmt, While):
                     walk(stmt.body)
                 elif isinstance(stmt, Func):
-                    raise TPyError("вложенные функции пока нельзя", stmt.line)
+                    raise TPyError("nested-func", stmt.line)
 
         walk(stmts)
         temps = self._count_fors(stmts)
@@ -312,7 +324,7 @@ class Compiler:
 
     def _alloc_temp(self) -> str:
         if self.temp_used >= self.temp_max:
-            raise TPyError("внутренний сбой: не хватило временных ячеек", 1)
+            raise TPyError("temps", 1)
         off = self.temp_base + self.temp_used * 4
         self.temp_used += 1
         name = f"@t{off}"
@@ -354,17 +366,17 @@ class Compiler:
             return
         if isinstance(stmt, Break):
             if not self.loops:
-                raise TPyError("break не внутри цикла", stmt.line)
+                raise TPyError("break-outside", stmt.line)
             self.a(f"    B {self.loops[-1][1]}")
             return
         if isinstance(stmt, Continue):
             if not self.loops:
-                raise TPyError("continue не внутри цикла", stmt.line)
+                raise TPyError("continue-outside", stmt.line)
             self.a(f"    B {self.loops[-1][0]}")
             return
         if isinstance(stmt, Func):
-            raise TPyError("вложенные функции пока нельзя", stmt.line)
-        raise TPyError("эта конструкция пока не собрана", getattr(stmt, "line", 1))
+            raise TPyError("nested-func", stmt.line)
+        raise TPyError("uncompiled", getattr(stmt, "line", 1))
 
     def _assign(self, stmt: Assign) -> None:
         if isinstance(stmt.target, Name):
@@ -382,7 +394,7 @@ class Compiler:
             self.pop("R1")
             self.a("    BL fn_list_set")
             return
-        raise TPyError("так присваивать нельзя", stmt.line)
+        raise TPyError("bad-store", stmt.line)
 
     def _if(self, stmt: If) -> None:
         end = self.lab("endif")
@@ -535,7 +547,7 @@ class Compiler:
         if isinstance(node, Bin):
             self._bin(node)
             return
-        raise TPyError("не собралось выражение", getattr(node, "line", 1))
+        raise TPyError("bad-expr", getattr(node, "line", 1))
 
     def _bin(self, node: Bin) -> None:
         if node.op == "and":
@@ -601,7 +613,7 @@ class Compiler:
             self.a("    ADDI R1, R0, 1")
             self.a(f"{end}:")
         else:
-            raise TPyError(f"нет оператора {op}", node.line)
+            raise TPyError("no-op", node.line, op=op)
         self.push("R1")
 
     def _call(self, node: Call) -> None:
@@ -610,33 +622,33 @@ class Compiler:
             fn = self.funcs[node.name]
             if len(args) != len(fn.params):
                 raise TPyError(
-                    f"{node.name}() ждёт {len(fn.params)} арг., а получила {len(args)}",
+                    "arity",
                     node.line,
+                    name=node.name,
+                    need=len(fn.params),
+                    got=len(args),
                 )
             if len(args) > 6:
-                raise TPyError("не больше 6 аргументов", node.line)
+                raise TPyError("max-args", node.line)
             label = "user__" + node.name[1:] if node.name in ("_init", "_update", "_draw") else "uf_" + node.name
         elif node.name in SIGS:
             lo, hi, pad = SIGS[node.name]
             if not lo <= len(args) <= hi:
-                raise TPyError(f"{node.name}() — неверное число аргументов", node.line)
+                raise TPyError("bad-argc", node.line, name=node.name)
             while len(args) < hi and pad:
                 # pad only the missing tail
                 break
             missing = hi - len(args)
             if missing:
                 if len(pad) < missing:
-                    raise TPyError(f"{node.name}() — не хватает аргументов", node.line)
-                for value in pad[-missing:] if False else pad[:missing]:
-                    pass
-                # defaults fill from the left of the pad list which is the tail
-                for value in pad[:missing]:
+                    raise TPyError("not-enough-args", node.line, name=node.name)
+                for value in pad[-missing:]:
                     args.append(Num(value, node.line))
             label = BUILTIN_FN[node.name]
         else:
-            raise TPyError(f"неизвестное имя {node.name}", node.line)
+            raise TPyError("unknown-name", node.line, name=node.name)
         if len(args) > 6:
-            raise TPyError("не больше 6 аргументов", node.line)
+            raise TPyError("max-args", node.line)
         for arg in args:
             self._expr(arg)
         regs = ["R1", "R2", "R3", "R4", "R5", "R6"]
@@ -686,7 +698,7 @@ class Compiler:
 
     def _load(self, name: str, reg: str) -> None:
         if name in self.funcs and name not in self.locals_set and name not in self.globals:
-            raise TPyError(f"{name} — функция, её нельзя читать как число", 1)
+            raise TPyError("func-as-value", 1, name=name)
         if (name in self.locals_set) and not self.force_global and name not in self.declared_globals:
             self._load_local(name, reg)
             return

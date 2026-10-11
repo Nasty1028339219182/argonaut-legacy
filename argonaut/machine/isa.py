@@ -3,13 +3,17 @@
 32-bit fixed instructions. R0 is hardwired to zero.
 R12 is FP, R13 is SP, R14 is LR. R1–R11 are general purpose.
 
-Cycle costs (0 wait states, one 32-bit transfer per bus cycle):
+Cycle costs, before the region wait added at execution time:
   ALU / immediate / shift-immediate / NOP : 1
   MUL                                       : 4
   LDR/STR and byte/half variants            : 2
   LDM/STM                                   : 1 + n
   any branch, JR, BL                        : 3
   WFI / HALT                                : 1
+
+SRAM and wave RAM add nothing. A data access in ROM adds 1.
+Framebuffer, palette, and device ports add 2. Instruction fetch is
+already inside the costs above and is not charged again.
 """
 
 from __future__ import annotations
